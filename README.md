@@ -1,6 +1,6 @@
-# Trace Monitoring
+# Trajectory Scanning
 
-`trace-monitoring` is a small CLI for analyzing message trajectories from local JSON files or remote Docent runs. It counts how many messages belong to each role (`system`, `user`, `assistant`, `tool`) and presents the result either as a human-readable terminal report or as structured JSON.
+`trajectory-scanning` is a small CLI for analyzing message trajectories from local JSON files or remote Docent runs. It counts how many messages belong to each role (`system`, `user`, `assistant`, `tool`) and presents the result either as a human-readable terminal report or as structured JSON.
 
 ![Demo](data/demo.png)
 
