@@ -590,15 +590,12 @@ def test_export_helpers_write_expected_json(out_path, capsys):
         results_collections,
         base_dir=out_path,
     )
-    mapping_payload = json.loads(exported_collections[0].read_text(encoding="utf-8"))
-    collections_payload = json.loads(exported_collections[1].read_text(encoding="utf-8"))
-    assert mapping_payload["collection_run_mappings"][0]["run_ids"] == ["run-a", "run-b"]
+    collections_payload = json.loads(exported_collections[0].read_text(encoding="utf-8"))
     assert collections_payload["collections"][0]["aggregate_metrics"]["total"] == pytest.approx(5.0)
     assert collections_payload["collections"][1]["trajectory_metrics"][0]["run_id"] == "run-c"
 
     assert ts.ensure_out_dir(out_path) == out_path / "output"
     assert ts.sanitize_filename_part("co l/1") == "co_l_1"
-    assert ts.build_collection_run_mappings(selection_collections.targets)[1]["collection_name"] == "Beta"
     assert ts.build_all_runs_export_payload(selection_runs, aggregate_runs, results_runs)["scope"] == "all_runs"
     assert (
         ts.build_all_collections_runs_payload(aggregate_collections, results_collections)["scope"]
@@ -1133,12 +1130,6 @@ def test_try_load_cached_metrics_all_runs(out_path):
 
 def test_try_load_cached_metrics_all_collections(out_path):
     """Test try_load_cached_metrics for all_collections selection."""
-    mappings_payload = {
-        "scope": "all_collections",
-        "collection_run_mappings": [
-            {"collection_id": "col-1", "collection_name": "Collection One", "run_ids": ["run-a"]},
-        ],
-    }
     runs_payload = {
         "scope": "all_collections",
         "run_count": 1,
@@ -1164,9 +1155,6 @@ def test_try_load_cached_metrics_all_collections(out_path):
     }
     out_subdir = out_path / "output"
     out_subdir.mkdir(parents=True, exist_ok=True)
-    (out_subdir / "all_collections_collection_run_mappings.json").write_text(
-        json.dumps(mappings_payload), encoding="utf-8"
-    )
     (out_subdir / "all_collections_runs_data.json").write_text(json.dumps(runs_payload), encoding="utf-8")
 
     selection = ts.RemoteSelection(
@@ -1210,27 +1198,18 @@ def test_load_cached_metrics_corrupted_file(out_path):
 
 
 def test_load_cached_all_collections_metrics_missing_files(out_path):
-    """Test that load_cached_all_collections_metrics returns (None, None) when files are missing."""
-    mappings, runs = ts.load_cached_all_collections_metrics(base_dir=out_path)
-    assert mappings is None
-    assert runs is None
+    """Test that load_cached_all_collections_metrics returns None when the file is missing."""
+    assert ts.load_cached_all_collections_metrics(base_dir=out_path) is None
 
 
 def test_try_load_cached_metrics_all_collections_missing_scope(out_path):
     """Test try_load_cached_metrics with all_collections but missing runs data scope."""
-    mappings_payload = {
-        "scope": "all_collections",
-        "collection_run_mappings": [],
-    }
     runs_payload = {
         "scope": "single",  # Wrong scope
         "collections": [],
     }
     out_subdir = out_path / "output"
     out_subdir.mkdir(parents=True, exist_ok=True)
-    (out_subdir / "all_collections_collection_run_mappings.json").write_text(
-        json.dumps(mappings_payload), encoding="utf-8"
-    )
     (out_subdir / "all_collections_runs_data.json").write_text(json.dumps(runs_payload), encoding="utf-8")
 
     selection = ts.RemoteSelection(
@@ -1242,17 +1221,7 @@ def test_try_load_cached_metrics_all_collections_missing_scope(out_path):
 
 
 def test_try_load_cached_metrics_all_collections_missing_runs_data(out_path):
-    """Test try_load_cached_metrics with all_collections but only mappings file."""
-    mappings_payload = {
-        "scope": "all_collections",
-        "collection_run_mappings": [],
-    }
-    out_subdir = out_path / "output"
-    out_subdir.mkdir(parents=True, exist_ok=True)
-    (out_subdir / "all_collections_collection_run_mappings.json").write_text(
-        json.dumps(mappings_payload), encoding="utf-8"
-    )
-
+    """Test try_load_cached_metrics with all_collections but no runs data file."""
     selection = ts.RemoteSelection(
         mode="all_collections",
         targets=[ts.RemoteTarget(collection_id="col-1", collection_name="One", run_id="run-a")],
@@ -1262,23 +1231,14 @@ def test_try_load_cached_metrics_all_collections_missing_runs_data(out_path):
 
 
 def test_load_cached_all_collections_metrics_corrupted_runs_file(out_path):
-    """Test load_cached_all_collections_metrics when runs file is corrupted but mappings is valid."""
-    mappings_payload = {
-        "scope": "all_collections",
-        "collection_run_mappings": [],
-    }
+    """Test load_cached_all_collections_metrics when the runs file is corrupted."""
     out_subdir = out_path / "output"
     out_subdir.mkdir(parents=True, exist_ok=True)
-    (out_subdir / "all_collections_collection_run_mappings.json").write_text(
-        json.dumps(mappings_payload), encoding="utf-8"
-    )
     (out_subdir / "all_collections_runs_data.json").write_text(
         "invalid json {", encoding="utf-8"
     )
 
-    mappings, runs = ts.load_cached_all_collections_metrics(base_dir=out_path)
-    assert mappings is None
-    assert runs is None
+    assert ts.load_cached_all_collections_metrics(base_dir=out_path) is None
 
 
 def test_try_load_cached_metrics_unknown_mode():

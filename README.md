@@ -23,9 +23,13 @@
 
 ## Setup
 
+To be able to analyze Docent trajectories, you need to set up an account and obtain an API key. 
+For local analysis, you can skip the Docent setup and go directly to step 4.
+
 1. Create an account at docent.transluce.org and sign in
-2. Obtain your API key from the Docent settings page
-3. Create and activate a virtual environment, then install the dependencies you need:
+2. Go to https://www.swebench.com, click on the Trajs link for the models you are interested in, and then click on "Clone Collection"
+3. Obtain your API key from the Docent settings page
+4. Create and activate a virtual environment, then install the dependencies you need:
 
 ```bash
 python3 -m venv .venv
@@ -64,6 +68,8 @@ Subcommands:
 - `remote` analyzes Docent trajectories
 - `collections` lists available Docent collections
 - `runs` lists run IDs for one Docent collection
+
+`-h` shows help for the main CLI or any subcommand
 
 ## Local Analysis
 
@@ -192,7 +198,7 @@ Batch analysis returns aggregate data plus exported file paths:
 - `collections`
 - `export_files`
 
-## Batch Export Files and Caching
+## Batch Export Files
 
 When you analyze more than one remote trajectory, the tool writes JSON exports to `output/`.
 
@@ -202,44 +208,19 @@ For `--all-runs` in a single collection:
 
 For `--all-collections`:
 
-- `output/all_collections_collection_run_mappings.json`
 - `output/all_collections_runs_data.json`
 
 These exports contain per-run metrics and aggregate summaries for downstream processing.
 
-### Caching
+## Caching
 
 Batch analysis results are cached to the `output/` directory. On subsequent runs with the same collection and mode (`--all-runs` or `--all-collections`), the tool will load cached metrics instead of re-fetching from Docent. This significantly speeds up repeated analysis of the same collections.
 
 Cache validation:
 - For `all_runs`: Verifies the collection_id matches
-- For `all_collections`: Checks both mapping and runs files exist with correct scope
+- For `all_collections`: Checks the runs file exists with correct scope
 
 If cache files are missing or invalid, the tool automatically fetches fresh data from Docent.
-
-## Supported Input Shapes
-
-The local parser accepts trajectory payloads that contain messages in one of these forms:
-
-- top-level `messages`
-- nested `agent_run.messages`
-- transcript-style `transcripts[*].messages`
-- sequences containing one or more of the formats above
-
-Each message is normalized and counted by `role`.
-
-## Code Architecture
-
-### Core Components
-
-- **Message Extraction**: Unified message extraction pipeline handles multiple trajectory formats (direct JSON, Docent SDK objects, transcript collections)
-- **Metrics Computation**: Stateful `Metrics` and `AverageMetrics` dataclasses for precise message role counting and batch averaging
-- **Client Management**: Centralized Docent client building with automatic `.env` loading and API key resolution
-- **Batch Processing**: Supports three remote analysis modes:
-  - Single run (interactive or direct)
-  - All runs in one collection (with caching)
-  - All collections and runs (with caching)
-- **Export & Aggregation**: Automatic JSON export with per-collection grouping, run-level metrics, and cross-collection comparison tables
 
 ## Development
 
@@ -280,3 +261,14 @@ data/sample_trajectory.json        Sample local trajectory
 example.env                        Example environment file
 output/                            Generated batch exports
 ```
+
+## Core Components
+
+- **Message Extraction**: Unified message extraction pipeline handles multiple trajectory formats (direct JSON, Docent SDK objects, transcript collections)
+- **Metrics Computation**: Stateful `Metrics` and `AverageMetrics` dataclasses for precise message role counting and batch averaging
+- **Client Management**: Centralized Docent client building with automatic `.env` loading and API key resolution
+- **Batch Processing**: Supports three remote analysis modes:
+  - Single run (interactive or direct)
+  - All runs in one collection (with caching)
+  - All collections and runs (with caching)
+- **Export & Aggregation**: Automatic JSON export with per-collection grouping, run-level metrics, and cross-collection comparison tables

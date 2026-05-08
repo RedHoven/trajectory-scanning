@@ -531,21 +531,6 @@ def ensure_out_dir(base_dir: Path | None = None) -> Path:
     return out_dir
 
 
-def build_collection_run_mappings(targets: Sequence[RemoteTarget]) -> list[dict[str, Any]]:
-    grouped: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for target in targets:
-        if target.collection_id not in grouped:
-            grouped[target.collection_id] = {
-                "collection_id": target.collection_id,
-                "collection_name": target.collection_name,
-                "run_ids": [],
-            }
-            order.append(target.collection_id)
-        grouped[target.collection_id]["run_ids"].append(target.run_id)
-    return [grouped[collection_id] for collection_id in order]
-
-
 def build_all_runs_export_payload(
     selection: RemoteSelection,
     aggregate: BatchAggregate,
@@ -617,20 +602,12 @@ def export_batch_results(
         )
         return [export_path]
 
-    mappings_path = out_dir / "all_collections_collection_run_mappings.json"
     runs_path = out_dir / "all_collections_runs_data.json"
-    write_json_file(
-        mappings_path,
-        {
-            "scope": "all_collections",
-            "collection_run_mappings": build_collection_run_mappings(selection.targets),
-        },
-    )
     write_json_file(
         runs_path,
         build_all_collections_runs_payload(aggregate, results),
     )
-    return [mappings_path, runs_path]
+    return [runs_path]
 
 
 def load_cached_all_runs_metrics(
@@ -652,24 +629,18 @@ def load_cached_all_runs_metrics(
 
 def load_cached_all_collections_metrics(
     base_dir: Path | None = None,
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Try to load cached metrics for all_collections mode.
-    
-    Returns: (mappings_data, runs_data) tuple, or (None, None) if not found.
-    """
+) -> dict[str, Any] | None:
+    """Try to load cached metrics for all_collections mode."""
     out_dir = ensure_out_dir(base_dir)
-    mappings_path = out_dir / "all_collections_collection_run_mappings.json"
     runs_path = out_dir / "all_collections_runs_data.json"
-    
-    if not mappings_path.exists() or not runs_path.exists():
-        return None, None
-    
+
+    if not runs_path.exists():
+        return None
+
     try:
-        mappings_data = load_local(str(mappings_path))
-        runs_data = load_local(str(runs_path))
-        return mappings_data, runs_data
+        return load_local(str(runs_path))
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return None
 
 
 def reconstruct_results_from_cached(
@@ -741,8 +712,8 @@ def try_load_cached_metrics(
         return None
     
     if selection.mode == "all_collections":
-        mappings_data, runs_data = load_cached_all_collections_metrics(base_dir)
-        if mappings_data and runs_data and runs_data.get("scope") == "all_collections":
+        runs_data = load_cached_all_collections_metrics(base_dir)
+        if runs_data and runs_data.get("scope") == "all_collections":
             return reconstruct_results_from_cached(runs_data, is_all_collections=True)
         return None
     
