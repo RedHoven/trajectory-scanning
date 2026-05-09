@@ -11,6 +11,9 @@
 - Supports interactive selection of collections and runs
 - Can analyze a single run, all runs in one collection, or all runs across all collections
 - Computes batch averages for multi-run analysis
+- Detects whether each trajectory was resolved
+- Computes per-trajectory spread stats (`average`, `min`, `max`, `std`) for role percentages and message totals
+- Splits average message counts into resolved and unresolved subsets
 - Exports batch analysis data to `output/*.json`
 
 ## Requirements
@@ -93,6 +96,7 @@ Current sample output:
   "collection_id": null,
   "collection_name": null,
   "run_id": null,
+  "resolved": false,
   "metrics": {
     "system": 1,
     "user": 1,
@@ -170,11 +174,14 @@ For single trajectories, the CLI prints a terminal report with:
 - an ordered trajectory strip made of colored squares
 - message counts by role
 - percentage share of each role
+- whether the trajectory was resolved
 - a simple bar visualization
 
 For batch analysis, it also prints:
 
 - average metrics across runs
+- per-trajectory spread statistics for role percentages and average message counts
+- average message counts for resolved and unresolved trajectories
 - per-collection averages
 - a cross-collection comparison table
 
@@ -188,6 +195,7 @@ Single-run analysis returns:
 - `collection_id`
 - `collection_name`
 - `run_id`
+- `resolved`
 - `metrics`
 
 Batch analysis returns aggregate data plus exported file paths:
@@ -195,6 +203,7 @@ Batch analysis returns aggregate data plus exported file paths:
 - `scope`
 - `run_count`
 - `overall_average`
+- `overall_trajectory_metric_summary`
 - `collections`
 - `export_files`
 
@@ -211,6 +220,23 @@ For `--all-collections`:
 - `output/all_collections_runs_data.json`
 
 These exports contain per-run metrics and aggregate summaries for downstream processing.
+
+Each trajectory record includes a `resolved` field.
+
+Batch exports also include trajectory-spread summaries:
+
+- `trajectory_metric_summary` for `--all-runs`
+- `overall_trajectory_metric_summary` for `--all-collections`
+
+Those summaries include:
+
+- `system_percentage`, `user_percentage`, `assistant_percentage`, `tool_percentage`
+- `avg_messages`
+- `resolved_avg_messages`
+- `unresolved_avg_messages`
+- `resolved_count`, `unresolved_count`, `unknown_resolution_count`
+
+Each percentage block and `avg_messages` contains `average`, `min`, `max`, and `std`.
 
 ## Caching
 
@@ -245,10 +271,10 @@ Current status in this repository:
 Name                               Stmts   Miss  Cover   Missing
 ----------------------------------------------------------------
 tests/conftest.py                      5      0   100%
-tests/test_trajectory_scanner.py     551      0   100%
-trajectory_scanner.py                641      0   100%
+tests/test_trajectory_scanner.py     573      0   100%
+trajectory_scanner.py                741      0   100%
 ----------------------------------------------------------------
-TOTAL                               1197      0   100%
+TOTAL                               1319      0   100%
 ```
 
 
@@ -265,10 +291,10 @@ output/                            Generated batch exports
 ## Core Components
 
 - **Message Extraction**: Unified message extraction pipeline handles multiple trajectory formats (direct JSON, Docent SDK objects, transcript collections)
-- **Metrics Computation**: Stateful `Metrics` and `AverageMetrics` dataclasses for precise message role counting and batch averaging
+- **Metrics Computation**: Structured dataclasses for role counts, resolution tracking, averages, and trajectory spread statistics
 - **Client Management**: Centralized Docent client building with automatic `.env` loading and API key resolution
 - **Batch Processing**: Supports three remote analysis modes:
   - Single run (interactive or direct)
   - All runs in one collection (with caching)
   - All collections and runs (with caching)
-- **Export & Aggregation**: Automatic JSON export with per-collection grouping, run-level metrics, and cross-collection comparison tables
+- **Export & Aggregation**: Automatic JSON export with per-collection grouping, run-level metrics, resolution flags, and cross-collection comparison tables

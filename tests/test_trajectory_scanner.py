@@ -102,6 +102,7 @@ def make_result(source: str = "sample") -> ts.AnalysisResult:
         collection_id="c",
         collection_name="Collection",
         run_id="r",
+        resolved=False,
     )
 
 
@@ -112,6 +113,7 @@ def test_analysis_result_to_dict():
         "collection_id": "c",
         "collection_name": "Collection",
         "run_id": "r",
+        "resolved": False,
         "metrics": {
             "system": 1,
             "user": 2,
@@ -261,11 +263,27 @@ def test_metrics_analysis_and_formatting_helpers():
     ]
     metrics = ts.compute_metrics(messages)
     result = ts.analyze_payload({"messages": messages}, "payload")
+    resolved_result = ts.analyze_payload({"messages": messages, "metadata": {"scores": {"resolved": 1}}}, "resolved")
 
     assert ts.normalize_role({}) == "unknown"
+    assert ts.normalize_resolved_value(True) is True
+    assert ts.normalize_resolved_value(0) is False
+    assert ts.normalize_resolved_value(2) is None
+    assert ts.normalize_resolved_value(1.0) is True
+    assert ts.normalize_resolved_value(0.5) is None
+    assert ts.normalize_resolved_value("passed") is True
+    assert ts.normalize_resolved_value("failed") is False
+    assert ts.normalize_resolved_value("maybe") is None
+    assert ts.extract_resolved_status(None) is None
+    assert ts.extract_resolved_status([{"messages": []}]) is None
+    assert ts.extract_resolved_status({"resolved": False}) is False
+    assert ts.extract_resolved_status({"metadata": {"resolved": True}}) is True
+    assert ts.extract_resolved_status([{"messages": []}, {"metadata": {"scores": {"resolved": 0}}}]) is False
     assert metrics == ts.Metrics(system=1, user=1, assistant=1, tool=1, total=5)
     assert result.source == "payload"
     assert result.metrics == metrics
+    assert result.resolved is None
+    assert resolved_result.resolved is True
     assert result.trajectory_roles == ("system", "user", "assistant", "tool", "other")
     assert ts.percent(0, 0) == "0.0%"
     assert ts.percent(1, 4) == "25.0%"
@@ -274,6 +292,9 @@ def test_metrics_analysis_and_formatting_helpers():
     assert ts.format_metric_value(5) == "5"
     assert ts.format_metric_value(5.0) == "5"
     assert ts.format_metric_value(5.25) == "5.2"
+    assert ts.format_resolved_status(True) == "yes"
+    assert ts.format_resolved_status(False) == "no"
+    assert ts.format_resolved_status(None) == "unknown"
     assert ts.draw_bar(0, 0, "system", False).endswith("·" * 20)
     assert "■" in ts.draw_bar(2, 4, "assistant", True)
     assert ts.draw_trajectory_track(("system", "unknown", "tool"), False, width=2) == ["■■", "■"]
@@ -287,6 +308,18 @@ def test_print_helpers_emit_expected_output(capsys):
         scope="all_collections",
         run_count=3,
         overall_average=average,
+        overall_trajectory_metric_summary=ts.TrajectoryMetricSummary(
+            system_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+            user_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+            assistant_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+            tool_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+            avg_messages=ts.SummaryStats(12.0, 10.0, 14.0, 2.0),
+            resolved_avg_messages=11.0,
+            unresolved_avg_messages=13.0,
+            resolved_count=1,
+            unresolved_count=1,
+            unknown_resolution_count=1,
+        ),
         collections=[
             ts.CollectionAggregate(
                 collection_id="c1",
@@ -294,6 +327,18 @@ def test_print_helpers_emit_expected_output(capsys):
                 short_name="Collect...",
                 run_count=2,
                 average_metrics=average,
+                trajectory_metric_summary=ts.TrajectoryMetricSummary(
+                    system_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+                    user_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+                    assistant_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+                    tool_percentage=ts.SummaryStats(25.0, 20.0, 30.0, 5.0),
+                    avg_messages=ts.SummaryStats(12.0, 10.0, 14.0, 2.0),
+                    resolved_avg_messages=11.0,
+                    unresolved_avg_messages=13.0,
+                    resolved_count=1,
+                    unresolved_count=1,
+                    unknown_resolution_count=1,
+                ),
             )
         ],
     )
@@ -302,6 +347,7 @@ def test_print_helpers_emit_expected_output(capsys):
         metrics,
         "source",
         color=False,
+        resolved=False,
         trajectory_roles=("system", "user", "assistant", "tool"),
     )
     ts.print_average_report(average, "avg-source", color=False, title_text="Average", run_count=2)
@@ -315,7 +361,13 @@ def test_print_helpers_emit_expected_output(capsys):
     ts.print_collection_comparison_table(aggregate.collections, color=False)
     ts.print_aggregate_report(aggregate, color=False)
     ts.print_aggregate_report(
-        ts.BatchAggregate(scope="all_runs", run_count=2, overall_average=average, collections=aggregate.collections),
+        ts.BatchAggregate(
+            scope="all_runs",
+            run_count=2,
+            overall_average=average,
+            overall_trajectory_metric_summary=aggregate.overall_trajectory_metric_summary,
+            collections=aggregate.collections,
+        ),
         color=False,
     )
 
@@ -330,6 +382,8 @@ def test_print_helpers_emit_expected_output(capsys):
     assert "[1/2]" in output
     assert "Collection Comparison" in output
     assert "Progress" in output
+    assert "Resolved:" in output
+    assert "Resolved avg msgs:" in output
 
 
 def test_prompt_selection_handles_errors_and_valid_paths(monkeypatch, capsys):
@@ -478,6 +532,9 @@ def test_average_and_aggregate_helpers():
     )
     assert average == ts.AverageMetrics(system=2.0, user=3.0, assistant=4.0, tool=5.0, total=14.0)
     assert ts.shorten_collection_name("VeryLongCollectionName", "c1") == "VeryLon..."
+    assert ts.safe_percentage(1, 0) == pytest.approx(0.0)
+    assert ts.safe_percentage(1, 4) == pytest.approx(25.0)
+    assert ts.compute_summary_stats([2.0, 4.0]).std == pytest.approx(1.0)
 
     aggregate = ts.aggregate_batch_results(
         [
@@ -487,6 +544,7 @@ def test_average_and_aggregate_helpers():
                 collection_id="c1",
                 collection_name="Collection One",
                 run_id="r1",
+                resolved=True,
             ),
             ts.AnalysisResult(
                 source="b",
@@ -494,6 +552,7 @@ def test_average_and_aggregate_helpers():
                 collection_id="c1",
                 collection_name="Collection One",
                 run_id="r2",
+                resolved=False,
             ),
             ts.AnalysisResult(
                 source="c",
@@ -501,6 +560,7 @@ def test_average_and_aggregate_helpers():
                 collection_id="c2",
                 collection_name="Collection Two",
                 run_id="r3",
+                resolved=None,
             ),
         ],
         scope="all_collections",
@@ -509,11 +569,21 @@ def test_average_and_aggregate_helpers():
     assert aggregate.overall_average.total == pytest.approx(6.0)
     assert [collection.collection_id for collection in aggregate.collections] == ["c1", "c2"]
     assert aggregate.collections[0].average_metrics.total == pytest.approx(5.0)
+    assert aggregate.overall_trajectory_metric_summary.avg_messages.average == pytest.approx(6.0)
+    assert aggregate.overall_trajectory_metric_summary.avg_messages.min == pytest.approx(4.0)
+    assert aggregate.overall_trajectory_metric_summary.avg_messages.max == pytest.approx(8.0)
+    assert aggregate.overall_trajectory_metric_summary.resolved_avg_messages == pytest.approx(4.0)
+    assert aggregate.overall_trajectory_metric_summary.unresolved_avg_messages == pytest.approx(6.0)
+    assert aggregate.overall_trajectory_metric_summary.unknown_resolution_count == 1
 
     with pytest.raises(ValueError, match="empty result set"):
         ts.aggregate_batch_results([], scope="all_runs")
     with pytest.raises(ValueError, match="without any trajectories"):
         ts.compute_average_metrics([])
+    with pytest.raises(ValueError, match="without any values"):
+        ts.compute_summary_stats([])
+    with pytest.raises(ValueError, match="without any trajectories"):
+        ts.compute_trajectory_metric_summary([])
 
 
 def test_export_helpers_write_expected_json(out_path, capsys):
@@ -530,6 +600,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
             collection_id="col/1",
             collection_name="Alpha",
             run_id="run-a",
+            resolved=True,
             metrics=ts.Metrics(system=1, user=1, assistant=1, tool=1, total=4),
         ),
         ts.AnalysisResult(
@@ -537,6 +608,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
             collection_id="col/1",
             collection_name="Alpha",
             run_id="run-b",
+            resolved=False,
             metrics=ts.Metrics(system=3, user=1, assistant=1, tool=1, total=6),
         ),
     ]
@@ -550,7 +622,9 @@ def test_export_helpers_write_expected_json(out_path, capsys):
     assert exported_runs[0].name == "all_runs_col_1_metrics.json"
     runs_payload = json.loads(exported_runs[0].read_text(encoding="utf-8"))
     assert runs_payload["average_metrics"]["total"] == pytest.approx(5.0)
+    assert runs_payload["trajectory_metric_summary"]["avg_messages"]["std"] == pytest.approx(1.0)
     assert [item["run_id"] for item in runs_payload["trajectory_metrics"]] == ["run-a", "run-b"]
+    assert [item["resolved"] for item in runs_payload["trajectory_metrics"]] == [True, False]
 
     selection_collections = ts.RemoteSelection(
         mode="all_collections",
@@ -566,6 +640,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
             collection_id="col-1",
             collection_name="Alpha",
             run_id="run-a",
+            resolved=True,
             metrics=ts.Metrics(system=1, user=1, assistant=1, tool=1, total=4),
         ),
         ts.AnalysisResult(
@@ -573,6 +648,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
             collection_id="col-1",
             collection_name="Alpha",
             run_id="run-b",
+            resolved=False,
             metrics=ts.Metrics(system=3, user=1, assistant=1, tool=1, total=6),
         ),
         ts.AnalysisResult(
@@ -580,6 +656,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
             collection_id="col-2",
             collection_name="Beta",
             run_id="run-c",
+            resolved=None,
             metrics=ts.Metrics(system=2, user=2, assistant=2, tool=2, total=8),
         ),
     ]
@@ -592,6 +669,7 @@ def test_export_helpers_write_expected_json(out_path, capsys):
     )
     collections_payload = json.loads(exported_collections[0].read_text(encoding="utf-8"))
     assert collections_payload["collections"][0]["aggregate_metrics"]["total"] == pytest.approx(5.0)
+    assert collections_payload["overall_trajectory_metric_summary"]["avg_messages"]["max"] == pytest.approx(8.0)
     assert collections_payload["collections"][1]["trajectory_metrics"][0]["run_id"] == "run-c"
 
     assert ts.ensure_out_dir(out_path) == out_path / "output"
@@ -691,6 +769,7 @@ def test_analyze_remote_run_and_targets(monkeypatch):
     assert result.source == "Docent run: col-1/run-a"
     assert result.collection_name == "Alpha"
     assert result.metrics.total == 4
+    assert result.resolved is None
     assert result.trajectory_roles == ("system", "user", "assistant", "tool")
 
     progress_calls: list[tuple[int, int, bool, str]] = []
@@ -802,19 +881,32 @@ def test_main_remote_branches(monkeypatch, capsys):
     monkeypatch.setattr(
         ts,
         "print_report",
-        lambda metrics, source, color, trajectory_roles=(): printed.append(
-            (metrics, source, color, trajectory_roles)
+        lambda metrics, source, color, resolved=None, trajectory_roles=(): printed.append(
+            (metrics, source, color, resolved, trajectory_roles)
         ),
     )
     assert ts.main() == 0
     assert printed[0][1] == "remote-json"
     assert printed[0][2] is False
-    assert printed[0][3] == ()
+    assert printed[0][3] is False
+    assert printed[0][4] == ()
 
     aggregate = ts.BatchAggregate(
         scope="all_runs",
         run_count=2,
         overall_average=ts.AverageMetrics(system=1, user=1, assistant=1, tool=1, total=4),
+        overall_trajectory_metric_summary=ts.TrajectoryMetricSummary(
+            system_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+            user_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+            assistant_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+            tool_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+            avg_messages=ts.SummaryStats(4.0, 4.0, 4.0, 0.0),
+            resolved_avg_messages=4.0,
+            unresolved_avg_messages=None,
+            resolved_count=1,
+            unresolved_count=0,
+            unknown_resolution_count=0,
+        ),
         collections=[
             ts.CollectionAggregate(
                 collection_id="c1",
@@ -822,6 +914,18 @@ def test_main_remote_branches(monkeypatch, capsys):
                 short_name="One",
                 run_count=2,
                 average_metrics=ts.AverageMetrics(system=1, user=1, assistant=1, tool=1, total=4),
+                trajectory_metric_summary=ts.TrajectoryMetricSummary(
+                    system_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+                    user_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+                    assistant_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+                    tool_percentage=ts.SummaryStats(25.0, 25.0, 25.0, 0.0),
+                    avg_messages=ts.SummaryStats(4.0, 4.0, 4.0, 0.0),
+                    resolved_avg_messages=4.0,
+                    unresolved_avg_messages=None,
+                    resolved_count=1,
+                    unresolved_count=0,
+                    unknown_resolution_count=0,
+                ),
             )
         ],
     )
@@ -900,12 +1004,12 @@ def test_main_local_branches(monkeypatch, capsys):
     monkeypatch.setattr(
         ts,
         "print_report",
-        lambda metrics, source, color, trajectory_roles=(): printed.append(
-            (metrics, source, color, trajectory_roles)
+        lambda metrics, source, color, resolved=None, trajectory_roles=(): printed.append(
+            (metrics, source, color, resolved, trajectory_roles)
         ),
     )
     assert ts.main() == 0
-    assert printed == [(make_metrics(), "src-human", False, ())]
+    assert printed == [(make_metrics(), "src-human", False, False, ())]
 
 
 def test_module_main_entrypoint_executes(out_path, monkeypatch, capsys):
@@ -929,6 +1033,7 @@ def test_print_report_multiline_trajectory(capsys):
         metrics,
         "multiline test",
         color=False,
+        resolved=None,
         trajectory_roles=trajectory_roles,
     )
     output = capsys.readouterr().out

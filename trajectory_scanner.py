@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from collections import Counter
@@ -60,6 +61,7 @@ class AnalysisResult:
     collection_id: str | None = None
     collection_name: str | None = None
     run_id: str | None = None
+    resolved: bool | None = None
     trajectory_roles: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +70,7 @@ class AnalysisResult:
             "collection_id": self.collection_id,
             "collection_name": self.collection_name,
             "run_id": self.run_id,
+            "resolved": self.resolved,
             "metrics": self.metrics.to_dict(),
         }
 
@@ -102,12 +105,52 @@ class AverageMetrics:
 
 
 @dataclass(frozen=True)
+class SummaryStats:
+    average: float
+    min: float
+    max: float
+    std: float
+
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TrajectoryMetricSummary:
+    system_percentage: SummaryStats
+    user_percentage: SummaryStats
+    assistant_percentage: SummaryStats
+    tool_percentage: SummaryStats
+    avg_messages: SummaryStats
+    resolved_avg_messages: float | None
+    unresolved_avg_messages: float | None
+    resolved_count: int
+    unresolved_count: int
+    unknown_resolution_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "system_percentage": self.system_percentage.to_dict(),
+            "user_percentage": self.user_percentage.to_dict(),
+            "assistant_percentage": self.assistant_percentage.to_dict(),
+            "tool_percentage": self.tool_percentage.to_dict(),
+            "avg_messages": self.avg_messages.to_dict(),
+            "resolved_avg_messages": self.resolved_avg_messages,
+            "unresolved_avg_messages": self.unresolved_avg_messages,
+            "resolved_count": self.resolved_count,
+            "unresolved_count": self.unresolved_count,
+            "unknown_resolution_count": self.unknown_resolution_count,
+        }
+
+
+@dataclass(frozen=True)
 class CollectionAggregate:
     collection_id: str
     collection_name: str
     short_name: str
     run_count: int
     average_metrics: AverageMetrics
+    trajectory_metric_summary: TrajectoryMetricSummary
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +159,7 @@ class CollectionAggregate:
             "short_name": self.short_name,
             "run_count": self.run_count,
             "average_metrics": self.average_metrics.to_dict(),
+            "trajectory_metric_summary": self.trajectory_metric_summary.to_dict(),
         }
 
 
@@ -124,6 +168,7 @@ class BatchAggregate:
     scope: str
     run_count: int
     overall_average: AverageMetrics
+    overall_trajectory_metric_summary: TrajectoryMetricSummary
     collections: list[CollectionAggregate]
 
     def to_dict(self) -> dict[str, Any]:
@@ -131,6 +176,7 @@ class BatchAggregate:
             "scope": self.scope,
             "run_count": self.run_count,
             "overall_average": self.overall_average.to_dict(),
+            "overall_trajectory_metric_summary": self.overall_trajectory_metric_summary.to_dict(),
             "collections": [collection.to_dict() for collection in self.collections],
         }
 
@@ -262,6 +308,56 @@ def normalize_role(message: Mapping[str, Any]) -> str:
     return str(message.get("role", "unknown")).strip().lower()
 
 
+def normalize_resolved_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value in {0, 1}:
+            return bool(value)
+        return None
+    if isinstance(value, float):
+        if value in {0.0, 1.0}:
+            return bool(int(value))
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "resolved", "pass", "passed", "success", "succeeded"}:
+            return True
+        if normalized in {"0", "false", "unresolved", "fail", "failed", "error"}:
+            return False
+    return None
+
+
+def extract_resolved_status(payload: Any) -> bool | None:
+    if payload is None:
+        return None
+
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        for item in payload:
+            resolved = extract_resolved_status(item)
+            if resolved is not None:
+                return resolved
+        return None
+
+    direct_value = normalize_resolved_value(attr_or_key(payload, "resolved"))
+    if direct_value is not None:
+        return direct_value
+
+    metadata = attr_or_key(payload, "metadata")
+    if metadata is not None:
+        metadata_resolved = normalize_resolved_value(attr_or_key(metadata, "resolved"))
+        if metadata_resolved is not None:
+            return metadata_resolved
+
+        scores = attr_or_key(metadata, "scores")
+        if scores is not None:
+            scores_resolved = normalize_resolved_value(attr_or_key(scores, "resolved"))
+            if scores_resolved is not None:
+                return scores_resolved
+
+    return None
+
+
 def compute_metrics(messages: Sequence[Mapping[str, Any]]) -> Metrics:
     counts = Counter(normalize_role(message) for message in messages)
     return Metrics(
@@ -282,6 +378,7 @@ def analyze_payload(payload: Any, source_label: str) -> AnalysisResult:
     return AnalysisResult(
         source=source_label,
         metrics=compute_metrics(messages),
+        resolved=extract_resolved_status(payload),
         trajectory_roles=extract_trajectory_roles(messages),
     )
 
@@ -300,6 +397,7 @@ def analyze_remote_run(
         collection_name=collection_name,
         run_id=run_id,
         metrics=compute_metrics(messages),
+        resolved=extract_resolved_status(payload),
         trajectory_roles=extract_trajectory_roles(messages),
     )
 
@@ -322,6 +420,14 @@ def format_metric_value(value: float | int) -> str:
     if float(value).is_integer():
         return str(int(value))
     return f"{value:.1f}"
+
+
+def format_resolved_status(value: bool | None) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
 
 
 def draw_bar(count: int, total: int, role: str, enabled: bool, width: int = 20) -> str:
@@ -358,6 +464,7 @@ def print_report(
     source_label: str,
     color: bool,
     *,
+    resolved: bool | None = None,
     trajectory_roles: Sequence[str] = (),
 ) -> None:
     title = colorize("Trajectory Message Analysis", BOLD + GOLD, color)
@@ -390,6 +497,8 @@ def print_report(
     print(colorize("─" * 58, SLATE, color))
     total_label = colorize("Total messages:", BOLD, color)
     print(f"{total_label:<10}   {metrics.total:>5}")
+    resolved_label = colorize("Resolved:", BOLD, color)
+    print(f"{resolved_label:<10}   {format_resolved_status(resolved)}")
 
 
 def print_average_report(
@@ -443,6 +552,7 @@ def print_batch_report(results: Sequence[AnalysisResult], color: bool) -> None:
             result.metrics,
             result.source,
             color=color,
+            resolved=result.resolved,
             trajectory_roles=result.trajectory_roles,
         )
 
@@ -483,6 +593,57 @@ def compute_average_metrics(metrics_values: Sequence[Metrics]) -> AverageMetrics
     )
 
 
+def safe_percentage(count: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return (count / total) * 100.0
+
+
+def compute_summary_stats(values: Sequence[float]) -> SummaryStats:
+    if not values:
+        raise ValueError("Cannot compute summary stats without any values.")
+    average = sum(values) / len(values)
+    variance = sum((value - average) ** 2 for value in values) / len(values)
+    return SummaryStats(
+        average=average,
+        min=min(values),
+        max=max(values),
+        std=math.sqrt(variance),
+    )
+
+
+def compute_trajectory_metric_summary(results: Sequence[AnalysisResult]) -> TrajectoryMetricSummary:
+    if not results:
+        raise ValueError("Cannot compute trajectory summaries without any trajectories.")
+
+    system_percentages = [safe_percentage(result.metrics.system, result.metrics.total) for result in results]
+    user_percentages = [safe_percentage(result.metrics.user, result.metrics.total) for result in results]
+    assistant_percentages = [safe_percentage(result.metrics.assistant, result.metrics.total) for result in results]
+    tool_percentages = [safe_percentage(result.metrics.tool, result.metrics.total) for result in results]
+    message_totals = [float(result.metrics.total) for result in results]
+
+    resolved_totals = [result.metrics.total for result in results if result.resolved is True]
+    unresolved_totals = [result.metrics.total for result in results if result.resolved is False]
+    unknown_resolution_count = sum(1 for result in results if result.resolved is None)
+
+    return TrajectoryMetricSummary(
+        system_percentage=compute_summary_stats(system_percentages),
+        user_percentage=compute_summary_stats(user_percentages),
+        assistant_percentage=compute_summary_stats(assistant_percentages),
+        tool_percentage=compute_summary_stats(tool_percentages),
+        avg_messages=compute_summary_stats(message_totals),
+        resolved_avg_messages=(
+            sum(resolved_totals) / len(resolved_totals) if resolved_totals else None
+        ),
+        unresolved_avg_messages=(
+            sum(unresolved_totals) / len(unresolved_totals) if unresolved_totals else None
+        ),
+        resolved_count=len(resolved_totals),
+        unresolved_count=len(unresolved_totals),
+        unknown_resolution_count=unknown_resolution_count,
+    )
+
+
 def aggregate_batch_results(results: Sequence[AnalysisResult], scope: str) -> BatchAggregate:
     if not results:
         raise ValueError("Cannot aggregate an empty result set.")
@@ -509,6 +670,7 @@ def aggregate_batch_results(results: Sequence[AnalysisResult], scope: str) -> Ba
                 average_metrics=compute_average_metrics(
                     [result.metrics for result in collection_results]
                 ),
+                trajectory_metric_summary=compute_trajectory_metric_summary(collection_results),
             )
         )
 
@@ -516,6 +678,7 @@ def aggregate_batch_results(results: Sequence[AnalysisResult], scope: str) -> Ba
         scope=scope,
         run_count=len(results),
         overall_average=compute_average_metrics([result.metrics for result in results]),
+        overall_trajectory_metric_summary=compute_trajectory_metric_summary(results),
         collections=collections,
     )
 
@@ -545,6 +708,7 @@ def build_all_runs_export_payload(
         },
         "run_count": aggregate.run_count,
         "average_metrics": aggregate.overall_average.to_dict(),
+        "trajectory_metric_summary": aggregate.overall_trajectory_metric_summary.to_dict(),
         "trajectory_metrics": [result.to_dict() for result in results],
     }
 
@@ -568,6 +732,7 @@ def build_all_collections_runs_payload(
                 "short_name": collection.short_name,
                 "run_count": collection.run_count,
                 "aggregate_metrics": collection.average_metrics.to_dict(),
+                "trajectory_metric_summary": collection.trajectory_metric_summary.to_dict(),
                 "trajectory_metrics": [result.to_dict() for result in collection_results],
             }
         )
@@ -576,6 +741,7 @@ def build_all_collections_runs_payload(
         "scope": "all_collections",
         "run_count": aggregate.run_count,
         "overall_average": aggregate.overall_average.to_dict(),
+        "overall_trajectory_metric_summary": aggregate.overall_trajectory_metric_summary.to_dict(),
         "collections": collections_payload,
     }
 
@@ -659,6 +825,7 @@ def reconstruct_results_from_cached(
                     collection_id=trajectory_data.get("collection_id"),
                     collection_name=trajectory_data.get("collection_name"),
                     run_id=trajectory_data.get("run_id"),
+                    resolved=trajectory_data.get("resolved"),
                     metrics=Metrics(
                         system=trajectory_data["metrics"]["system"],
                         user=trajectory_data["metrics"]["user"],
@@ -676,6 +843,7 @@ def reconstruct_results_from_cached(
                 collection_id=trajectory_data.get("collection_id"),
                 collection_name=trajectory_data.get("collection_name"),
                 run_id=trajectory_data.get("run_id"),
+                resolved=trajectory_data.get("resolved"),
                 metrics=Metrics(
                     system=trajectory_data["metrics"]["system"],
                     user=trajectory_data["metrics"]["user"],
@@ -764,6 +932,50 @@ def print_collection_comparison_table(collections: Sequence[CollectionAggregate]
         print(row)
 
 
+def print_trajectory_metric_summary(
+    summary: TrajectoryMetricSummary,
+    source_label: str,
+    color: bool,
+    *,
+    title_text: str,
+) -> None:
+    print()
+    print(colorize(title_text, BOLD + GOLD, color))
+    print(colorize(source_label, DIM, color))
+    print(colorize("Across trajectories: average / min / max / std", DIM, color))
+    print(colorize("─" * 76, SLATE, color))
+
+    rows = [
+        ("System %", summary.system_percentage),
+        ("User %", summary.user_percentage),
+        ("Assist %", summary.assistant_percentage),
+        ("Tool %", summary.tool_percentage),
+        ("Avg msgs", summary.avg_messages),
+    ]
+    for label, stats in rows:
+        print(
+            f"{label:<10} "
+            f"avg={format_metric_value(stats.average):>6}  "
+            f"min={format_metric_value(stats.min):>6}  "
+            f"max={format_metric_value(stats.max):>6}  "
+            f"std={format_metric_value(stats.std):>6}"
+        )
+
+    print(colorize("─" * 76, SLATE, color))
+    print(
+        f"Resolved avg msgs:   "
+        f"{format_metric_value(summary.resolved_avg_messages) if summary.resolved_avg_messages is not None else 'n/a'}"
+        f"  ({summary.resolved_count} trajectories)"
+    )
+    print(
+        f"Unresolved avg msgs: "
+        f"{format_metric_value(summary.unresolved_avg_messages) if summary.unresolved_avg_messages is not None else 'n/a'}"
+        f"  ({summary.unresolved_count} trajectories)"
+    )
+    if summary.unknown_resolution_count:
+        print(f"Unknown resolution:  {summary.unknown_resolution_count} trajectories")
+
+
 def print_aggregate_report(aggregate: BatchAggregate, color: bool) -> None:
     if aggregate.scope == "all_runs":
         collection = aggregate.collections[0]
@@ -774,6 +986,12 @@ def print_aggregate_report(aggregate: BatchAggregate, color: bool) -> None:
             title_text="Collection Average Across Runs",
             run_count=collection.run_count,
         )
+        print_trajectory_metric_summary(
+            collection.trajectory_metric_summary,
+            f"{collection.collection_name} [{collection.collection_id}]",
+            color,
+            title_text="Collection Trajectory Spread",
+        )
         return
 
     print_average_report(
@@ -783,6 +1001,12 @@ def print_aggregate_report(aggregate: BatchAggregate, color: bool) -> None:
         title_text="Overall Average Across All Runs",
         run_count=aggregate.run_count,
     )
+    print_trajectory_metric_summary(
+        aggregate.overall_trajectory_metric_summary,
+        "All selected collections",
+        color,
+        title_text="Overall Trajectory Spread",
+    )
     for collection in aggregate.collections:
         print_average_report(
             collection.average_metrics,
@@ -790,6 +1014,12 @@ def print_aggregate_report(aggregate: BatchAggregate, color: bool) -> None:
             color,
             title_text="Collection Average Across Runs",
             run_count=collection.run_count,
+        )
+        print_trajectory_metric_summary(
+            collection.trajectory_metric_summary,
+            f"{collection.collection_name} [{collection.collection_id}]",
+            color,
+            title_text="Collection Trajectory Spread",
         )
     print_collection_comparison_table(aggregate.collections, color)
 
@@ -1352,6 +1582,7 @@ def main() -> int:
                         result.metrics,
                         result.source,
                         color=not args.no_color,
+                        resolved=result.resolved,
                         trajectory_roles=result.trajectory_roles,
                     )
             return 0
@@ -1369,6 +1600,7 @@ def main() -> int:
             result.metrics,
             result.source,
             color=not args.no_color,
+            resolved=result.resolved,
             trajectory_roles=result.trajectory_roles,
         )
 
